@@ -235,7 +235,11 @@ def lookup():
     if not name:
         return jsonify({"error": "BOX名を入力してください"})
 
-    matched = {k: v for k, v in BOX_URLS.items() if name in k}
+    # 完全一致を優先、なければ部分一致
+    if name in BOX_URLS:
+        matched = {name: BOX_URLS[name]}
+    else:
+        matched = {k: v for k, v in BOX_URLS.items() if name in k}
     if not matched:
         candidates = [k for k in BOX_URLS if any(c in k for c in name)]
         msg = f"「{name}」が見つかりません"
