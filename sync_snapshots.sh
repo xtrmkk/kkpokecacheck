@@ -9,6 +9,9 @@ PYTHON=/Library/Frameworks/Python.framework/Versions/3.14/bin/python3
 SNAP_SRC=~/pokemon_monitors/box_average/snapshots
 
 # 1. ローカルsnapshotsを最新化
+#    既存 ./snapshots を消してからコピー。残すと cp -r が入れ子
+#    (./snapshots/snapshots) を作り、古いファイルが残ってキャッシュが更新されない。
+rm -rf ./snapshots
 cp -r "$SNAP_SRC" ./snapshots
 
 # 2. キャッシュ再生成
