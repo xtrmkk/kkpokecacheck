@@ -738,47 +738,45 @@ window.onload = () => {
 # ─── Fetch helpers (existing) ───
 
 def fetch_offers(url: str):
-    resp = requests.get(url, headers=HEADERS, timeout=15)
+    """v1/apparels/{id}/sizes API から各サイズ最安値を取得。
+    スニダンがJSON-LD構造化データを削除したためAPI方式に移行。"""
+    m = re.search(r"/apparels/(\d+)", url)
+    if not m:
+        return "不明", []
+    product_id  = m.group(1)
+    api_url     = f"https://snkrdunk.com/v1/apparels/{product_id}/sizes"
+    api_headers = {**HEADERS, "Accept": "application/json",
+                   "Referer": f"https://snkrdunk.com/apparels/{product_id}"}
+
+    resp = requests.get(api_url, headers=api_headers, timeout=15)
     resp.raise_for_status()
-    soup = BeautifulSoup(resp.text, "html.parser")
-    offers = []
+    data = resp.json()
+
+    # 商品名をページ <title> から取得（取得できなければ「不明」）
     product_name = "不明"
-    for script in soup.find_all("script", type="application/ld+json"):
-        try:
-            ld = json.loads(script.string or "")
-        except json.JSONDecodeError:
+    try:
+        page = requests.get(url, headers=HEADERS, timeout=15)
+        soup = BeautifulSoup(page.text, "html.parser")
+        title = soup.find("title")
+        if title and title.string:
+            raw = title.string.split("｜")[0]
+            raw = re.split(r"(通販|買取|相場|のフィギュア)", raw)[0]
+            product_name = raw.strip()
+    except Exception:
+        pass
+
+    offers = []
+    for sp in data.get("sizePrices", []):
+        size_name = sp["size"]["localizedName"]   # "1個", "2個", ...
+        qty_m = re.search(r"(\d+)", size_name)
+        if not qty_m:
             continue
-        if isinstance(ld, dict) and "@graph" in ld:
-            ld = ld["@graph"]
-        if isinstance(ld, dict):
-            ld = [ld]
-        for item in ld:
-            if item.get("@type") == "Product":
-                product_name = item.get("name", product_name)
-            raw_offers = item.get("offers", [])
-            if isinstance(raw_offers, dict):
-                inner = raw_offers.get("offers", [])
-                raw_offers = inner if inner else [raw_offers]
-            for offer in raw_offers:
-                price = offer.get("price")
-                qty = None
-                eq = offer.get("eligibleQuantity", {})
-                if isinstance(eq, dict):
-                    qty = eq.get("value")
-                if qty is None:
-                    for key in ("name", "size", "sku", "description"):
-                        m = re.search(r"(\d+)\s*個", str(offer.get(key, "")))
-                        if m:
-                            qty = m.group(1)
-                            break
-                if price is None or qty is None:
-                    continue
-                try:
-                    price, qty = int(float(price)), int(float(qty))
-                except (ValueError, TypeError):
-                    continue
-                if qty > 0:
-                    offers.append({"qty": qty, "price": price, "unit": (price + SHIPPING) / qty})
+        qty   = int(qty_m.group(1))
+        price = sp.get("minListingPrice", 0)
+        if price <= 0 or qty <= 0:
+            continue
+        offers.append({"qty": qty, "price": price, "unit": (price + SHIPPING) / qty})
+
     offers.sort(key=lambda x: x["qty"])
     return product_name, offers
 
