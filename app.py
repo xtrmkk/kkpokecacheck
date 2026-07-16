@@ -236,6 +236,7 @@ LOOKUP_HTML = """<!DOCTYPE html>
   <a href="/dashboard">ダッシュボード</a>
   <a href="/ranking">下落ランキング</a>
   <a href="/portfolio">ポートフォリオ</a>
+  <a href="/psa">PSA計算</a>
 </nav>
 <div class="search-box">
   <input type="text" id="q" placeholder="BOX名を入力（例：メガドリーム）" autocomplete="off">
@@ -335,6 +336,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <a href="/dashboard" class="active">ダッシュボード</a>
   <a href="/ranking">下落ランキング</a>
   <a href="/portfolio">ポートフォリオ</a>
+  <a href="/psa">PSA計算</a>
 </nav>
 <div class="sort-bar">
   <button class="sort-btn active" onclick="sortBy('default',this)">発売順</button>
@@ -420,6 +422,7 @@ CHART_HTML = """<!DOCTYPE html>
   <a href="/dashboard">ダッシュボード</a>
   <a href="/ranking">下落ランキング</a>
   <a href="/portfolio">ポートフォリオ</a>
+  <a href="/psa">PSA計算</a>
 </nav>
 <a class="back" href="/dashboard">← ダッシュボードに戻る</a>
 <h1>📈 {{ name }}</h1>
@@ -559,6 +562,7 @@ RANKING_HTML = """<!DOCTYPE html>
   <a href="/dashboard">ダッシュボード</a>
   <a href="/ranking" class="active">下落ランキング</a>
   <a href="/portfolio">ポートフォリオ</a>
+  <a href="/psa">PSA計算</a>
 </nav>
 <div class="tabs">
   <button class="tab" onclick="showPeriod('d1',this)">1日</button>
@@ -646,6 +650,7 @@ PORTFOLIO_HTML = """<!DOCTYPE html>
   <a href="/dashboard">ダッシュボード</a>
   <a href="/ranking">下落ランキング</a>
   <a href="/portfolio" class="active">ポートフォリオ</a>
+  <a href="/psa">PSA計算</a>
 </nav>
 <div class="summary" id="summary"></div>
 <div class="add-form">
@@ -731,6 +736,167 @@ window.onload = () => {
     render();
   });
 };
+</script>
+</body></html>"""
+
+# ─── PSA gross-profit calculator page ───
+
+PSA_CALC_HTML = """<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PSA粗利計算</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Hiragino Sans', sans-serif;
+         background: #f5f5f5; padding: 12px; }
+  h1 { font-size: 18px; color: #333; margin-bottom: 12px; }
+  .nav { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
+  .nav a { padding: 8px 14px; background: #2c3e50; color: white; border-radius: 8px;
+           text-decoration: none; font-size: 13px; }
+  .nav a.active { background: #e74c3c; }
+  .form-card { background: white; border-radius: 12px; padding: 16px;
+               box-shadow: 0 2px 8px rgba(0,0,0,.08); margin-bottom: 12px; }
+  .field { margin-bottom: 12px; }
+  .field label { display: block; font-size: 12px; color: #666; font-weight: 600;
+                 margin-bottom: 4px; }
+  .field input, .field select { width: 100%; padding: 12px; font-size: 16px;
+    border: 1px solid #ddd; border-radius: 8px; outline: none; background: white; }
+  .field input:focus, .field select:focus { border-color: #2c3e50; }
+  .btn-reset { width: 100%; padding: 12px; background: #95a5a6; color: white;
+               border: none; border-radius: 8px; font-size: 14px; cursor: pointer; }
+  .btn-reset:active { background: #7f8c8d; }
+  .summary { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-bottom: 12px; }
+  .sum-card { background: white; border-radius: 10px; padding: 12px;
+              box-shadow: 0 1px 4px rgba(0,0,0,.06); }
+  .sum-label { font-size: 11px; color: #888; }
+  .sum-value { font-size: 18px; font-weight: 700; color: #222; margin-top: 2px; }
+  .result-card { background: white; border-radius: 12px; padding: 16px;
+                 box-shadow: 0 2px 8px rgba(0,0,0,.08); margin-bottom: 12px; }
+  .result-title { font-size: 13px; color: #666; font-weight: 600; margin-bottom: 10px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { background: #2c3e50; color: white; padding: 8px 6px; text-align: right; font-size: 11px; }
+  th:first-child { text-align: left; }
+  td { padding: 8px 6px; border-bottom: 1px solid #f0f0f0; text-align: right; }
+  td:first-child { text-align: left; font-weight: 600; color: #555; }
+  td.profit-plus { color: #2e7d32; font-weight: 700; }
+  td.profit-minus { color: #c62828; font-weight: 700; }
+  .note { font-size: 11px; color: #999; margin-top: 8px; line-height: 1.6; }
+  .placeholder { text-align: center; color: #aaa; padding: 24px 0; font-size: 13px; }
+</style>
+</head>
+<body>
+<h1>🧮 PSA粗利計算</h1>
+<nav class="nav">
+  <a href="/">検索</a>
+  <a href="/dashboard">ダッシュボード</a>
+  <a href="/ranking">下落ランキング</a>
+  <a href="/portfolio">ポートフォリオ</a>
+  <a href="/psa" class="active">PSA計算</a>
+</nav>
+<div class="form-card">
+  <div class="field">
+    <label for="inp-cost">仕入れ単価（円/枚）</label>
+    <input type="number" id="inp-cost" inputmode="numeric" min="0" placeholder="例: 10000">
+  </div>
+  <div class="field">
+    <label for="inp-qty">仕入れ枚数</label>
+    <input type="number" id="inp-qty" inputmode="numeric" min="1" placeholder="例: 10">
+  </div>
+  <div class="field">
+    <label for="inp-rate">予想PSA10取得率（%）</label>
+    <input type="number" id="inp-rate" inputmode="decimal" min="0" max="100" placeholder="例: 50">
+  </div>
+  <div class="field">
+    <label for="sel-plan">鑑定料金/枚</label>
+    <select id="sel-plan">
+      <option value="regular">レギュラー（11,980円）</option>
+      <option value="express">エクスプレス（22,980円）</option>
+    </select>
+  </div>
+  <div class="field">
+    <label for="inp-sell">販売価格（PSA10想定、円）</label>
+    <input type="number" id="inp-sell" inputmode="numeric" min="0" placeholder="例: 50000">
+  </div>
+  <button class="btn-reset" onclick="resetAll()">リセット</button>
+</div>
+<div class="summary" id="summary"></div>
+<div class="result-card">
+  <div class="result-title">販売価格シナリオ別 粗利（販売手数料10%控除後）</div>
+  <div id="result"></div>
+  <div class="note">
+    粗利/枚 = 取得率 × 販売価格 × 0.9 − 仕入れ単価 − 鑑定料/枚<br>
+    9割/8割/7割は販売価格が下振れした場合のシミュレーションです
+  </div>
+</div>
+<script>
+const PLAN_FEES = { regular: 11980, express: 22980 };
+const SCENARIOS = [
+  { label: '100%', ratio: 1.0 },
+  { label: '9割',  ratio: 0.9 },
+  { label: '8割',  ratio: 0.8 },
+  { label: '7割',  ratio: 0.7 },
+];
+const INPUT_IDS = ['inp-cost', 'inp-qty', 'inp-rate', 'inp-sell'];
+
+function yen(n) {
+  const r = Math.round(n);
+  return (r < 0 ? '-¥' : '¥') + Math.abs(r).toLocaleString();
+}
+
+function calc() {
+  const cost = parseFloat(document.getElementById('inp-cost').value);
+  const qty  = parseFloat(document.getElementById('inp-qty').value);
+  const rate = parseFloat(document.getElementById('inp-rate').value);
+  const sell = parseFloat(document.getElementById('inp-sell').value);
+  const fee  = PLAN_FEES[document.getElementById('sel-plan').value];
+
+  const sumDiv = document.getElementById('summary');
+  const resDiv = document.getElementById('result');
+
+  if ([cost, qty, rate, sell].some(v => isNaN(v)) || qty <= 0) {
+    sumDiv.innerHTML = '';
+    resDiv.innerHTML = '<div class="placeholder">すべての項目を入力すると自動計算されます</div>';
+    return;
+  }
+
+  const r = rate / 100;
+  const invest = (cost + fee) * qty;
+  const breakeven = r > 0 ? (cost + fee) / (r * 0.9) : null;
+
+  sumDiv.innerHTML =
+    '<div class="sum-card"><div class="sum-label">総投資額（仕入れ+鑑定料）</div><div class="sum-value">'+yen(invest)+'</div></div>'
+    +'<div class="sum-card"><div class="sum-label">損益分岐販売価格</div><div class="sum-value">'+(breakeven !== null ? yen(breakeven) : '—')+'</div></div>';
+
+  const rows = SCENARIOS.map(s => {
+    const price = sell * s.ratio;
+    const net = price * 0.9;
+    const perCard = r * net - cost - fee;
+    const total = perCard * qty;
+    const cls1 = perCard >= 0 ? 'profit-plus' : 'profit-minus';
+    const cls2 = total >= 0 ? 'profit-plus' : 'profit-minus';
+    const sign1 = perCard >= 0 ? '+' : '';
+    const sign2 = total >= 0 ? '+' : '';
+    return '<tr><td>'+s.label+'</td><td>'+yen(price)+'</td><td>'+yen(net)+'</td>'
+      +'<td class="'+cls1+'">'+sign1+yen(perCard)+'</td>'
+      +'<td class="'+cls2+'">'+sign2+yen(total)+'</td></tr>';
+  }).join('');
+
+  resDiv.innerHTML = '<table><thead><tr><th>シナリオ</th><th>販売価格</th><th>手取り/枚</th>'
+    +'<th>期待粗利/枚</th><th>合計粗利</th></tr></thead><tbody>'+rows+'</tbody></table>';
+}
+
+function resetAll() {
+  if (!confirm('リセットしますか？')) return;
+  INPUT_IDS.forEach(id => { document.getElementById(id).value = ''; });
+  document.getElementById('sel-plan').value = 'regular';
+  calc();
+}
+
+INPUT_IDS.forEach(id => document.getElementById(id).addEventListener('input', calc));
+document.getElementById('sel-plan').addEventListener('change', calc);
+calc();
 </script>
 </body></html>"""
 
@@ -879,6 +1045,11 @@ def portfolio():
     box_list = [k for k in WATCHLIST_ORDER if k in BOX_URLS]
     return render_template_string(PORTFOLIO_HTML,
                                   box_list=json.dumps(box_list, ensure_ascii=False))
+
+
+@app.route("/psa")
+def psa_calc():
+    return render_template_string(PSA_CALC_HTML)
 
 
 if __name__ == "__main__":
