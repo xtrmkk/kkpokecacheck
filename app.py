@@ -764,6 +764,9 @@ PSA_CALC_HTML = """<!DOCTYPE html>
   .field input, .field select { width: 100%; padding: 12px; font-size: 16px;
     border: 1px solid #ddd; border-radius: 8px; outline: none; background: white; }
   .field input:focus, .field select:focus { border-color: #2c3e50; }
+  .check-row { display: flex; align-items: center; gap: 8px; font-size: 13px;
+               color: #555; margin: 4px 0 14px; cursor: pointer; }
+  .check-row input { width: 18px; height: 18px; }
   .btn-reset { width: 100%; padding: 12px; background: #95a5a6; color: white;
                border: none; border-radius: 8px; font-size: 14px; cursor: pointer; }
   .btn-reset:active { background: #7f8c8d; }
@@ -816,33 +819,47 @@ PSA_CALC_HTML = """<!DOCTYPE html>
     </select>
   </div>
   <div class="field">
-    <label for="inp-sell">販売価格（PSA10想定、円）</label>
-    <input type="number" id="inp-sell" inputmode="numeric" min="0" placeholder="例: 50000">
+    <label for="inp-sell">PSA10販売価格（円）</label>
+    <input type="number" id="inp-sell" inputmode="numeric" min="0" placeholder="例: 88000">
   </div>
+  <div class="field">
+    <label for="inp-raw">素体販売価格（PSA10非該当分、円/枚）</label>
+    <input type="number" id="inp-raw" inputmode="numeric" min="0" placeholder="例: 35850">
+  </div>
+  <label class="check-row"><input type="checkbox" id="chk-rawfee">素体販売にも販売手数料10%を適用</label>
   <button class="btn-reset" onclick="resetAll()">リセット</button>
 </div>
 <div class="summary" id="summary"></div>
 <div class="result-card">
-  <div class="result-title">販売価格シナリオ別 粗利（販売手数料10%控除後）</div>
+  <div class="result-title">PSA10販売価格シナリオ別 粗利・利益率（素体販売込み）</div>
   <div id="result"></div>
   <div class="note">
-    粗利/枚 = 取得率 × 販売価格 × 0.9 − 仕入れ単価 − 鑑定料/枚<br>
-    9割/8割/7割は販売価格が下振れした場合のシミュレーションです
+    合計粗利 = PSA10枚数 × PSA10販売価格 × 0.9 + 素体枚数 × 素体販売価格 − 総原価<br>
+    PSA10枚数 = 枚数 × 取得率、素体枚数 = 枚数 × (1 − 取得率)<br>
+    総原価 = (仕入れ単価 + 鑑定料) × 枚数（鑑定料は全枚数に発生）<br>
+    利益率 = 合計粗利 ÷ 総投資額。満額/9割/8割/7割はPSA10販売価格が下振れした場合のシミュレーションです
   </div>
 </div>
 <script>
 const PLAN_FEES = { regular: 11980, express: 22980 };
 const SCENARIOS = [
-  { label: '100%', ratio: 1.0 },
+  { label: '満額', ratio: 1.0 },
   { label: '9割',  ratio: 0.9 },
   { label: '8割',  ratio: 0.8 },
   { label: '7割',  ratio: 0.7 },
 ];
-const INPUT_IDS = ['inp-cost', 'inp-qty', 'inp-rate', 'inp-sell'];
+const INPUT_IDS = ['inp-cost', 'inp-qty', 'inp-rate', 'inp-sell', 'inp-raw'];
 
 function yen(n) {
   const r = Math.round(n);
   return (r < 0 ? '-¥' : '¥') + Math.abs(r).toLocaleString();
+}
+function cnt(n) {
+  const v = Math.round(n * 100) / 100;
+  return Number.isInteger(v) ? v.toString() : v.toFixed(1);
+}
+function pct(n) {
+  return (n >= 0 ? '+' : '') + n.toFixed(1) + '%';
 }
 
 function calc() {
@@ -850,52 +867,62 @@ function calc() {
   const qty  = parseFloat(document.getElementById('inp-qty').value);
   const rate = parseFloat(document.getElementById('inp-rate').value);
   const sell = parseFloat(document.getElementById('inp-sell').value);
+  const rawIn = parseFloat(document.getElementById('inp-raw').value);
+  const raw  = isNaN(rawIn) ? 0 : rawIn;
   const fee  = PLAN_FEES[document.getElementById('sel-plan').value];
+  const rawFee = document.getElementById('chk-rawfee').checked ? 0.9 : 1.0;
 
   const sumDiv = document.getElementById('summary');
   const resDiv = document.getElementById('result');
 
-  if ([cost, qty, rate, sell].some(v => isNaN(v)) || qty <= 0) {
+  if ([cost, qty, rate, sell].some(v => isNaN(v)) || qty <= 0 || rate < 0 || rate > 100) {
     sumDiv.innerHTML = '';
-    resDiv.innerHTML = '<div class="placeholder">すべての項目を入力すると自動計算されます</div>';
+    resDiv.innerHTML = '<div class="placeholder">仕入れ単価・枚数・取得率・PSA10販売価格を入力すると自動計算されます</div>';
     return;
   }
 
   const r = rate / 100;
+  const n10 = qty * r;
+  const nRaw = qty * (1 - r);
   const invest = (cost + fee) * qty;
-  const breakeven = r > 0 ? (cost + fee) / (r * 0.9) : null;
+  const rawRevenue = nRaw * raw * rawFee;
+  const breakeven = n10 > 0 ? (invest - rawRevenue) / (n10 * 0.9) : null;
+  const beText = breakeven === null ? '—'
+    : breakeven <= 0 ? '素体回収で黒字' : yen(breakeven);
 
   sumDiv.innerHTML =
     '<div class="sum-card"><div class="sum-label">総投資額（仕入れ+鑑定料）</div><div class="sum-value">'+yen(invest)+'</div></div>'
-    +'<div class="sum-card"><div class="sum-label">損益分岐販売価格</div><div class="sum-value">'+(breakeven !== null ? yen(breakeven) : '—')+'</div></div>';
+    +'<div class="sum-card"><div class="sum-label">枚数内訳（PSA10 / 素体）</div><div class="sum-value">'+cnt(n10)+' / '+cnt(nRaw)+'枚</div></div>'
+    +'<div class="sum-card"><div class="sum-label">素体回収額</div><div class="sum-value">'+yen(rawRevenue)+'</div></div>'
+    +'<div class="sum-card"><div class="sum-label">損益分岐PSA10価格</div><div class="sum-value">'+beText+'</div></div>';
 
   const rows = SCENARIOS.map(s => {
     const price = sell * s.ratio;
-    const net = price * 0.9;
-    const perCard = r * net - cost - fee;
-    const total = perCard * qty;
-    const cls1 = perCard >= 0 ? 'profit-plus' : 'profit-minus';
-    const cls2 = total >= 0 ? 'profit-plus' : 'profit-minus';
-    const sign1 = perCard >= 0 ? '+' : '';
-    const sign2 = total >= 0 ? '+' : '';
-    return '<tr><td>'+s.label+'</td><td>'+yen(price)+'</td><td>'+yen(net)+'</td>'
-      +'<td class="'+cls1+'">'+sign1+yen(perCard)+'</td>'
-      +'<td class="'+cls2+'">'+sign2+yen(total)+'</td></tr>';
+    const psaRevenue = n10 * price * 0.9;
+    const total = psaRevenue + rawRevenue - invest;
+    const roi = invest > 0 ? total / invest * 100 : 0;
+    const cls = total >= 0 ? 'profit-plus' : 'profit-minus';
+    const sign = total >= 0 ? '+' : '';
+    return '<tr><td>'+s.label+'</td><td>'+yen(price)+'</td>'
+      +'<td class="'+cls+'">'+sign+yen(total)+'</td>'
+      +'<td class="'+cls+'">'+pct(roi)+'</td></tr>';
   }).join('');
 
-  resDiv.innerHTML = '<table><thead><tr><th>シナリオ</th><th>販売価格</th><th>手取り/枚</th>'
-    +'<th>期待粗利/枚</th><th>合計粗利</th></tr></thead><tbody>'+rows+'</tbody></table>';
+  resDiv.innerHTML = '<table><thead><tr><th>シナリオ</th><th>PSA10販売価格</th>'
+    +'<th>合計粗利</th><th>利益率</th></tr></thead><tbody>'+rows+'</tbody></table>';
 }
 
 function resetAll() {
   if (!confirm('リセットしますか？')) return;
   INPUT_IDS.forEach(id => { document.getElementById(id).value = ''; });
   document.getElementById('sel-plan').value = 'regular';
+  document.getElementById('chk-rawfee').checked = false;
   calc();
 }
 
 INPUT_IDS.forEach(id => document.getElementById(id).addEventListener('input', calc));
 document.getElementById('sel-plan').addEventListener('change', calc);
+document.getElementById('chk-rawfee').addEventListener('change', calc);
 calc();
 </script>
 </body></html>"""
