@@ -26,6 +26,7 @@ SNAPSHOT_DIR = BASE_DIR / "snapshots"
 SNAPSHOT_CACHE_FILE = BASE_DIR / "snapshots_cache.json"
 
 WATCHLIST_ORDER = [
+    "ストームエメラルダ",
     "アビスアイ", "ニンジャスピナー", "ムニキスゼロ", "メガドリーム", "インフェルノX",
     "メガブレイブ", "メガシンフォニア", "ブラックボルト", "ホワイトフレア", "ブラックボルトDX", "ホワイトフレアDX",
     "スペシャルボックストウホク", "スペシャルボックスヒロシマ", "スペシャルボックスフクオカ",
