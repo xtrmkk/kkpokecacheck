@@ -46,6 +46,14 @@ WATCHLIST_ORDER = [
 ]
 
 
+def _qty1_unit(entry: dict) -> int | None:
+    """BOX1個出品の送料込単価（offers の quantity==1）。"""
+    for o in entry.get("offers") or []:
+        if o.get("quantity") == 1 and o.get("avg"):
+            return round(o["avg"])
+    return None
+
+
 def _build_snapshot_cache() -> list[dict]:
     """Build a lightweight cache: extract only best_avg + total_boxes per item."""
     if not SNAPSHOT_DIR.exists():
@@ -58,11 +66,15 @@ def _build_snapshot_cache() -> list[dict]:
             light = {}
             for name, entry in items.items():
                 if isinstance(entry, dict) and entry.get("best_avg"):
-                    light[name] = {
+                    rec = {
                         "best_avg": entry["best_avg"],
                         "total_boxes": entry.get("total_boxes", 0),
                         "inventory": entry.get("inventory", 0),
                     }
+                    q1 = _qty1_unit(entry)
+                    if q1:
+                        rec["q1"] = q1
+                    light[name] = rec
             snapshots.append({"ts": f.stem, "items": light})
         except (json.JSONDecodeError, KeyError):
             continue
@@ -164,130 +176,452 @@ def _build_chart_data(name: str) -> list[dict]:
             continue
         day = s["ts"][:10]
         if day not in daily:
-            daily[day] = {"prices": [], "boxes": []}
+            daily[day] = {"prices": [], "boxes": [], "q1": []}
         daily[day]["prices"].append(entry["best_avg"])
         daily[day]["boxes"].append(entry.get("total_boxes", 0))
+        if entry.get("q1"):
+            daily[day]["q1"].append(entry["q1"])
 
     result = []
     for day in sorted(daily.keys()):
         prices = daily[day]["prices"]
         boxes = daily[day]["boxes"]
+        q1 = daily[day]["q1"]
         result.append({
+            "day": day,
             "date": day[5:],
             "avg": round(sum(prices) / len(prices)),
             "min": round(min(prices)),
             "max": round(max(prices)),
             "boxes": max(boxes),
+            "q1": round(sum(q1) / len(q1)) if q1 else None,
+            "q1_min": round(min(q1)) if q1 else None,
+            "q1_max": round(max(q1)) if q1 else None,
         })
     return result
 
 
 # ─── Lookup page (existing) ───
 
-LOOKUP_HTML = """<!DOCTYPE html>
+LOOKUP_HTML = r"""<!DOCTYPE html>
 <html lang="ja">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ポケカBOX 最安値検索</title>
 <style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #eef1f5;
+    --card: #fff;
+    --ink: #1f2933;
+    --sub: #5c6773;
+    --muted: #98a2ae;
+    --line: #e9edf2;
+    --navy: #2c3e50;
+    --red: #e74c3c;
+    --green: #2e7d32;
+    --blue: #378ADD;
+    --shadow: 0 1px 2px rgba(16,24,40,.05), 0 6px 20px rgba(16,24,40,.06);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
   body { font-family: -apple-system, BlinkMacSystemFont, 'Hiragino Sans', sans-serif;
-         background: #f5f5f5; padding: 16px; }
-  h1 { font-size: 18px; color: #333; margin-bottom: 16px; }
-  .nav { display: flex; gap: 6px; margin-bottom: 16px; flex-wrap: wrap; }
-  .nav a { padding: 8px 14px; background: #2c3e50; color: white; border-radius: 8px;
-           text-decoration: none; font-size: 13px; }
-  .nav a.active { background: #e74c3c; }
-  .search-box { display: flex; gap: 8px; margin-bottom: 12px; }
-  input { flex: 1; padding: 12px; font-size: 16px; border: 1px solid #ddd;
-          border-radius: 8px; outline: none; }
-  button { padding: 12px 20px; background: #e74c3c; color: white;
-           border: none; border-radius: 8px; font-size: 16px; cursor: pointer; }
-  .hint { font-size: 12px; color: #888; margin-bottom: 16px; line-height: 1.6; }
-  .card { background: white; border-radius: 12px; padding: 16px;
-          box-shadow: 0 2px 8px rgba(0,0,0,.08); margin-bottom: 16px; }
-  .card-title { font-size: 16px; font-weight: 700; color: #222; margin-bottom: 4px; }
-  .card-meta { font-size: 12px; color: #888; margin-bottom: 12px; }
-  table { width: 100%; border-collapse: collapse; font-size: 14px; }
-  th { background: #2c3e50; color: white; padding: 8px 6px; text-align: right; font-size: 12px; }
+         background: var(--bg); color: var(--ink); padding-bottom: 48px;
+         -webkit-font-smoothing: antialiased; }
+
+  /* ── top bar ── */
+  .topbar { position: sticky; top: 0; z-index: 30; background: var(--navy);
+            padding: 10px 14px 8px; box-shadow: 0 2px 10px rgba(0,0,0,.12); }
+  .brand { font-size: 15px; font-weight: 700; color: #fff; letter-spacing: .02em;
+           margin-bottom: 8px; }
+  .nav { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; }
+  .nav::-webkit-scrollbar { display: none; }
+  .nav a { flex: none; padding: 6px 13px; border-radius: 999px; text-decoration: none;
+           font-size: 12.5px; color: #cfd8e3; background: rgba(255,255,255,.09); }
+  .nav a.active { background: var(--red); color: #fff; font-weight: 700; }
+
+  .wrap { max-width: 720px; margin: 0 auto; padding: 14px; }
+  .card { background: var(--card); border-radius: 14px; box-shadow: var(--shadow);
+          margin-bottom: 14px; overflow: hidden; }
+  .card-pad { padding: 14px; }
+
+  /* ── search ── */
+  .search-box { display: flex; gap: 8px; }
+  input[type=text] { flex: 1; min-width: 0; padding: 12px 14px; font-size: 16px;
+          border: 1px solid var(--line); border-radius: 10px; outline: none;
+          background: #fafbfc; }
+  input[type=text]:focus { border-color: var(--navy); background: #fff; }
+  .btn-go { flex: none; padding: 12px 20px; background: var(--red); color: #fff;
+            border: none; border-radius: 10px; font-size: 15px; font-weight: 700;
+            cursor: pointer; }
+  .btn-go:active { background: #c0392b; }
+  .hint { font-size: 11.5px; color: var(--muted); margin-top: 9px; line-height: 1.6; }
+
+  /* ── box list ── */
+  .list-head { display: flex; align-items: center; justify-content: space-between;
+               padding: 12px 14px; cursor: pointer; }
+  .list-title { font-size: 13px; font-weight: 700; color: var(--sub); }
+  .list-title span { color: var(--muted); font-weight: 500; margin-left: 4px; }
+  .chev { font-size: 11px; color: var(--muted); transition: transform .18s; }
+  .chev.open { transform: rotate(180deg); }
+  .list-body { max-height: 200px; overflow-y: auto; padding: 0 14px 14px;
+               border-top: 1px solid var(--line); }
+  .list-body.hidden { display: none; }
+  .list-grid { display: flex; flex-wrap: wrap; gap: 6px; padding-top: 12px; }
+  .chip { background: #f4f6f9; border: 1px solid var(--line); border-radius: 8px;
+          padding: 6px 10px; font-size: 12.5px; cursor: pointer; color: var(--sub); }
+  .chip:active { background: #e9edf2; }
+  .chip.hide { display: none; }
+  .empty-chip { font-size: 12px; color: var(--muted); padding: 12px 0 0; }
+
+  /* ── result header ── */
+  .res-head { padding: 14px 14px 12px; border-bottom: 1px solid var(--line); }
+  .res-name { font-size: 17px; font-weight: 700; line-height: 1.35; }
+  .res-meta { font-size: 11.5px; color: var(--muted); margin-top: 5px; }
+  .res-meta b { color: var(--sub); font-weight: 600; }
+
+  /* ── hero stats ── */
+  .hero { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--line); }
+  .hero-cell { background: var(--card); padding: 13px 14px; }
+  .hero-cell.wide { grid-column: 1 / -1; }
+  .hero-label { font-size: 10.5px; color: var(--muted); letter-spacing: .02em; }
+  .hero-value { font-size: 21px; font-weight: 700; margin-top: 3px; letter-spacing: -.02em; }
+  .hero-value.accent { color: var(--red); }
+  .hero-note { font-size: 11px; color: var(--sub); margin-top: 3px; }
+
+  /* ── table ── */
+  .sec-head { display: flex; align-items: center; justify-content: space-between;
+              gap: 10px; padding: 13px 14px 9px; }
+  .sec-head.stack { flex-direction: column; align-items: stretch; }
+  .sec-head.stack .seg { width: 100%; }
+  .sec-head.stack .seg button { flex: 1; }
+  .sec-title { font-size: 12.5px; font-weight: 700; color: var(--sub); }
+  .seg { display: flex; background: #f0f3f7; border-radius: 8px; padding: 2px; }
+  .seg button { border: none; background: none; font-size: 11.5px; color: var(--sub);
+                padding: 6px 10px; border-radius: 6px; cursor: pointer; font-family: inherit;
+                white-space: nowrap; }
+  .seg button.on { background: #fff; color: var(--navy); font-weight: 700;
+                   box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  th { background: #f7f9fb; color: var(--muted); padding: 8px 14px; text-align: right;
+       font-size: 10.5px; font-weight: 700; letter-spacing: .03em;
+       border-bottom: 1px solid var(--line); white-space: nowrap; }
   th:first-child { text-align: left; }
-  td { padding: 7px 6px; border-bottom: 1px solid #f0f0f0; text-align: right; }
-  td:first-child { text-align: left; }
-  tr.best td { color: #e74c3c; font-weight: 700; }
-  tr.second td { color: #e67e22; font-weight: 600; }
-  tr.third td { color: #f1c40f; font-weight: 600; }
-  .legend { font-size: 11px; color: #888; margin-top: 8px; }
-  .total { font-size: 12px; color: #555; margin-top: 6px; }
-  .error { background: #fff3f3; border: 1px solid #ffccc7; border-radius: 8px;
-           padding: 12px; color: #c0392b; font-size: 14px; }
-  .loading { text-align: center; color: #888; padding: 20px; }
-  .list-section { margin-bottom: 20px; }
-  .list-title { font-size: 13px; color: #666; font-weight: 600; margin-bottom: 8px; }
-  .list-grid { display: flex; flex-wrap: wrap; gap: 6px; }
-  .list-item { background: white; border: 1px solid #ddd; border-radius: 6px;
-               padding: 6px 10px; font-size: 13px; cursor: pointer; color: #333; }
-  .list-item:hover { background: #f9f9f9; }
+  td { padding: 9px 14px; border-bottom: 1px solid #f4f6f9; text-align: right;
+       font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td:first-child { text-align: left; color: var(--sub); }
+  tr.best td { background: #fff6f4; color: var(--red); font-weight: 700; }
+  tr.q1 td:first-child { font-weight: 700; color: var(--navy); }
+  td.dn { color: var(--green); font-weight: 600; }
+  td.up { color: var(--red); }
+  .tag { display: inline-block; font-size: 9.5px; font-weight: 700; padding: 1px 5px;
+         border-radius: 4px; margin-left: 5px; vertical-align: 1px; }
+  .tag.red { background: var(--red); color: #fff; }
+  .tag.gray { background: #eaeef3; color: var(--sub); }
+  .more { width: 100%; padding: 11px; border: none; background: #fafbfc; color: var(--navy);
+          font-size: 12.5px; font-weight: 700; cursor: pointer; font-family: inherit;
+          border-top: 1px solid var(--line); }
+  .note { font-size: 11px; color: var(--muted); padding: 10px 14px 14px; line-height: 1.6; }
+
+  /* ── chart ── */
+  .chart-card .sec-head { border-top: 1px solid var(--line); }
+  .chart-stats { display: flex; gap: 14px; padding: 0 14px 10px; flex-wrap: wrap; }
+  .cs { font-size: 11px; color: var(--muted); }
+  .cs b { display: block; font-size: 14px; color: var(--ink); margin-top: 1px;
+          font-variant-numeric: tabular-nums; }
+  .cs b.up { color: var(--green); }
+  .cs b.down { color: var(--red); }
+  .chart-container { position: relative; width: 100%; height: 220px; padding: 0 8px 12px; }
+  .chart-empty { font-size: 12.5px; color: var(--muted); text-align: center; padding: 28px 14px; }
+  .detail-link { display: block; text-align: center; font-size: 12px; color: var(--blue);
+                 text-decoration: none; padding: 11px; border-top: 1px solid var(--line);
+                 background: #fafbfc; font-weight: 600; }
+
+  .state { text-align: center; color: var(--muted); font-size: 13.5px; padding: 26px 14px; }
+  .error { background: #fff5f4; border: 1px solid #ffd7d1; border-radius: 12px;
+           padding: 14px; color: #c0392b; font-size: 13.5px; margin-bottom: 14px; }
+  .spin { display: inline-block; width: 15px; height: 15px; margin-right: 7px;
+          border: 2px solid #dfe5ec; border-top-color: var(--red); border-radius: 50%;
+          animation: sp .8s linear infinite; vertical-align: -3px; }
+  @keyframes sp { to { transform: rotate(360deg); } }
+
+  @media (max-width: 360px) {
+    .hero-value { font-size: 19px; }
+    th, td { padding-left: 10px; padding-right: 10px; }
+  }
 </style>
 </head>
 <body>
-<h1>🃏 ポケカBOX 最安値検索</h1>
-<nav class="nav">
-  <a href="/" class="active">検索</a>
-  <a href="/dashboard">ダッシュボード</a>
-  <a href="/ranking">下落ランキング</a>
-  <a href="/portfolio">ポートフォリオ</a>
-  <a href="/psa">PSA計算</a>
-</nav>
-<div class="search-box">
-  <input type="text" id="q" placeholder="BOX名を入力（例：メガドリーム）" autocomplete="off">
-  <button onclick="search()">検索</button>
-</div>
-<p class="hint">スニダンのリアルタイム価格を取得します（10〜20秒かかります）</p>
-<div class="list-section">
-  <div class="list-title">📦 対応BOX一覧</div>
-  <div class="list-grid" id="box-list"></div>
-</div>
-<div id="result"></div>
+<header class="topbar">
+  <div class="brand">🃏 ポケカBOX 最安値検索</div>
+  <nav class="nav">
+    <a href="/" class="active">検索</a>
+    <a href="/dashboard">ダッシュボード</a>
+    <a href="/ranking">下落ランキング</a>
+    <a href="/portfolio">ポートフォリオ</a>
+    <a href="/psa">PSA計算</a>
+  </nav>
+</header>
+
+<main class="wrap">
+  <section class="card card-pad">
+    <div class="search-box">
+      <input type="text" id="q" placeholder="BOX名を入力（例：メガドリーム）" autocomplete="off">
+      <button class="btn-go" onclick="search()">検索</button>
+    </div>
+    <p class="hint">スニダンのリアルタイム価格を取得します（10〜20秒かかります）。単価はすべて送料 ¥990 込み。</p>
+  </section>
+
+  <div id="result"></div>
+
+  <section class="card">
+    <div class="list-head" onclick="toggleList()">
+      <div class="list-title">📦 対応BOX一覧<span id="list-count"></span></div>
+      <div class="chev open" id="chev">▼</div>
+    </div>
+    <div class="list-body" id="list-body">
+      <div class="list-grid" id="box-list"></div>
+      <div class="empty-chip" id="chip-empty" style="display:none">該当するBOXがありません</div>
+    </div>
+  </section>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <script>
 const BOX_LIST = {{ box_list | safe }};
-window.onload = () => {
+const RANGES = [
+  { key: '1w', label: '1週間', days: 7 },
+  { key: '1m', label: '1ヶ月', days: 30 },
+  { key: '3m', label: '3ヶ月', days: 90 },
+  { key: 'all', label: 'すべて', days: null },
+];
+
+let CURRENT = null;      // 直近の検索結果
+let CHART_PTS = [];      // BOX1個単価の履歴
+let chartObj = null;
+let sortMode = 'qty';
+let expanded = false;
+let range = '1m';
+
+function yen(n) { return '¥' + Math.round(n).toLocaleString(); }
+function pct(n) { return (n > 0 ? '+' : '') + n.toFixed(1) + '%'; }
+
+/* ── BOX一覧 ── */
+window.addEventListener('DOMContentLoaded', () => {
   const grid = document.getElementById('box-list');
   BOX_LIST.forEach(name => {
     const el = document.createElement('div');
-    el.className = 'list-item';
+    el.className = 'chip';
     el.textContent = name;
+    el.dataset.name = name;
     el.onclick = () => { document.getElementById('q').value = name; search(); };
     grid.appendChild(el);
   });
-};
+  document.getElementById('list-count').textContent = '（' + BOX_LIST.length + '件）';
+  document.getElementById('q').addEventListener('input', filterChips);
+  document.getElementById('q').addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.target.blur(); search(); }
+  });
+});
+
+function toggleList() {
+  const body = document.getElementById('list-body');
+  body.classList.toggle('hidden');
+  document.getElementById('chev').classList.toggle('open');
+}
+
+function filterChips() {
+  const q = document.getElementById('q').value.trim();
+  let shown = 0;
+  document.querySelectorAll('.chip').forEach(c => {
+    const hit = !q || c.dataset.name.includes(q);
+    c.classList.toggle('hide', !hit);
+    if (hit) shown++;
+  });
+  document.getElementById('chip-empty').style.display = shown ? 'none' : 'block';
+}
+
+/* ── 検索 ── */
 async function search() {
   const q = document.getElementById('q').value.trim();
   if (!q) return;
   const res = document.getElementById('result');
-  res.innerHTML = '<div class="loading">🔍 スニダンからデータ取得中...</div>';
+  res.innerHTML = '<div class="card"><div class="state"><span class="spin"></span>スニダンからデータ取得中…</div></div>';
   try {
     const resp = await fetch('/api/lookup?name=' + encodeURIComponent(q));
     const data = await resp.json();
     if (data.error) { res.innerHTML = '<div class="error">⚠️ ' + data.error + '</div>'; return; }
-    res.innerHTML = renderCard(data);
-  } catch(e) { res.innerHTML = '<div class="error">⚠️ 通信エラーが発生しました</div>'; }
+    CURRENT = data;
+    expanded = false;
+    renderResult();
+    loadChart(data.name);
+  } catch (e) {
+    res.innerHTML = '<div class="error">⚠️ 通信エラーが発生しました</div>';
+  }
 }
-function yen(n) { return '¥' + n.toLocaleString(); }
-function renderCard(d) {
-  const sorted = [...d.offers].sort((a,b) => a.unit - b.unit);
-  const ranks = {};
-  sorted.slice(0,3).forEach((o,i) => ranks[o.qty] = ['🔴','🟠','🟡'][i]);
-  const bestQty = sorted[0]?.qty;
-  let rows = d.offers.map(o => {
-    const medal = ranks[o.qty] || '';
-    const cls = o.qty === sorted[0]?.qty ? 'best' : o.qty === sorted[1]?.qty ? 'second' : o.qty === sorted[2]?.qty ? 'third' : '';
-    const marker = o.qty === bestQty ? ' ← 最安' : '';
-    return '<tr class="'+cls+'"><td>'+medal+' '+o.qty+'個'+marker+'</td><td>'+yen(o.price)+'</td><td>'+yen(Math.round(o.unit))+'</td></tr>';
+
+/* ── 結果の描画 ── */
+function renderResult() {
+  const d = CURRENT;
+  const byUnit = [...d.offers].sort((a, b) => a.unit - b.unit);
+  const best = byUnit[0];
+  const one = d.offers.find(o => o.qty === 1);
+  const baseUnit = one ? one.unit : best.unit;
+  const gap = one ? (best.unit - one.unit) / one.unit * 100 : 0;
+
+  const head =
+    '<div class="res-head">'
+    + '<div class="res-name">' + d.name + '</div>'
+    + '<div class="res-meta">取得 ' + d.fetched_at + '　/　市場総箱数 <b>' + d.total_boxes.toLocaleString() + '箱</b></div>'
+    + '</div>';
+
+  const hero =
+    '<div class="hero">'
+    + '<div class="hero-cell"><div class="hero-label">BOX1個 単価</div>'
+    + '<div class="hero-value">' + (one ? yen(one.unit) : '—') + '</div>'
+    + '<div class="hero-note">' + (one ? '出品 ' + yen(one.price) + ' + 送料' : '1個出品なし') + '</div></div>'
+    + '<div class="hero-cell"><div class="hero-label">最安単価（まとめ買い）</div>'
+    + '<div class="hero-value accent">' + yen(best.unit) + '</div>'
+    + '<div class="hero-note">' + best.qty + '個 ' + yen(best.price)
+    + (one && best.qty !== 1 ? '　<b>' + pct(gap) + '</b>' : '') + '</div></div>'
+    + '</div>';
+
+  const rows = renderRows(byUnit, best, baseUnit);
+  const table =
+    '<div class="sec-head"><div class="sec-title">個数別の単価</div>'
+    + '<div class="seg">'
+    + '<button class="' + (sortMode === 'qty' ? 'on' : '') + '" onclick="setSort(\'qty\')">個数順</button>'
+    + '<button class="' + (sortMode === 'unit' ? 'on' : '') + '" onclick="setSort(\'unit\')">安い順</button>'
+    + '</div></div>'
+    + '<table><thead><tr><th>個数</th><th>出品最安値</th><th>送料込単価</th><th>1個比</th></tr></thead>'
+    + '<tbody>' + rows.html + '</tbody></table>'
+    + (rows.hidden > 0
+        ? '<button class="more" onclick="toggleMore()">' + (expanded ? '折りたたむ' : 'すべて表示（あと' + rows.hidden + '件）') + '</button>'
+        : '')
+    + '<div class="note">送料込単価 =（出品最安値 + 送料¥990）÷ 個数。「1個比」はBOX1個で買った場合との差。</div>';
+
+  document.getElementById('result').innerHTML =
+    '<section class="card">' + head + hero + table + '</section>'
+    + '<section class="card chart-card" id="chart-card">'
+    + '<div class="sec-head stack"><div class="sec-title">📈 BOX1個の単価推移（送料込）</div>'
+    + '<div class="seg" id="range-seg">'
+    + RANGES.map(r => '<button class="' + (range === r.key ? 'on' : '') + '" onclick="setRange(\'' + r.key + '\')">' + r.label + '</button>').join('')
+    + '</div></div>'
+    + '<div id="chart-body"><div class="chart-empty"><span class="spin"></span>読み込み中…</div></div>'
+    + '<a class="detail-link" href="/chart/' + encodeURIComponent(d.name) + '">まとめ買い最安値・出品数の詳細チャート →</a>'
+    + '</section>';
+}
+
+function renderRows(byUnit, best, baseUnit) {
+  const rank = {};
+  byUnit.slice(0, 3).forEach((o, i) => { rank[o.qty] = i; });
+  const list = sortMode === 'unit' ? byUnit : [...CURRENT.offers].sort((a, b) => a.qty - b.qty);
+  const limit = expanded ? list.length : 10;
+  const visible = list.slice(0, limit);
+
+  const html = visible.map(o => {
+    const diff = (o.unit - baseUnit) / baseUnit * 100;
+    const cls = [o === best || o.qty === best.qty ? 'best' : '', o.qty === 1 ? 'q1' : ''].join(' ').trim();
+    const medal = rank[o.qty] !== undefined ? ['🔴', '🟠', '🟡'][rank[o.qty]] + ' ' : '';
+    const tag = o.qty === best.qty ? '<span class="tag red">最安</span>'
+              : o.qty === 1 ? '<span class="tag gray">基準</span>' : '';
+    const dcls = o.qty === 1 ? '' : diff < -0.05 ? 'dn' : diff > 0.05 ? 'up' : '';
+    const dtxt = o.qty === 1 ? '—' : pct(diff);
+    return '<tr class="' + cls + '"><td>' + medal + o.qty + '個' + tag + '</td>'
+      + '<td>' + yen(o.price) + '</td><td>' + yen(o.unit) + '</td>'
+      + '<td class="' + dcls + '">' + dtxt + '</td></tr>';
   }).join('');
-  return '<div class="card"><div class="card-title">'+d.name+'</div><div class="card-meta">取得時刻: '+d.fetched_at+'</div><table><thead><tr><th>個数</th><th>出品最安値</th><th>送料込単価</th></tr></thead><tbody>'+rows+'</tbody></table><div class="legend">🔴 最安 🟠 2番目 🟡 3番目</div><div class="total">市場総箱数: '+d.total_boxes.toLocaleString()+'箱</div></div>';
+
+  return { html: html, hidden: list.length - visible.length };
 }
-document.getElementById('q').addEventListener('keydown', e => { if (e.key === 'Enter') search(); });
+
+function setSort(mode) { sortMode = mode; renderResult(); drawChart(); }
+function toggleMore() { expanded = !expanded; renderResult(); drawChart(); }
+function setRange(key) { range = key; renderResult(); drawChart(); }
+
+/* ── BOX1個の単価チャート ── */
+async function loadChart(name) {
+  CHART_PTS = [];
+  try {
+    const resp = await fetch('/api/chart?name=' + encodeURIComponent(name));
+    const data = await resp.json();
+    CHART_PTS = (data.points || []).filter(p => p.q1);
+  } catch (e) { CHART_PTS = []; }
+  drawChart();
+}
+
+function slicePoints() {
+  const days = (RANGES.find(r => r.key === range) || {}).days;
+  if (!days || !CHART_PTS.length) return CHART_PTS;
+  const last = new Date(CHART_PTS[CHART_PTS.length - 1].day + 'T00:00:00');
+  const from = new Date(last.getTime() - days * 86400000);
+  const pts = CHART_PTS.filter(p => new Date(p.day + 'T00:00:00') >= from);
+  return pts.length >= 2 ? pts : CHART_PTS.slice(-2);
+}
+
+function drawChart() {
+  const body = document.getElementById('chart-body');
+  if (!body) return;
+  if (chartObj) { chartObj.destroy(); chartObj = null; }
+  if (!CHART_PTS.length) {
+    body.innerHTML = '<div class="chart-empty">このBOXの履歴データがまだありません</div>';
+    return;
+  }
+  const pts = slicePoints();
+  const cur = pts[pts.length - 1].q1;
+  const first = pts[0].q1;
+  const hi = Math.max.apply(null, pts.map(p => p.q1));
+  const lo = Math.min.apply(null, pts.map(p => p.q1));
+  const chg = first ? (cur - first) / first * 100 : 0;
+  const ccls = chg > 0.05 ? 'up' : chg < -0.05 ? 'down' : '';
+
+  body.innerHTML =
+    '<div class="chart-stats">'
+    + '<div class="cs">現在<b>' + yen(cur) + '</b></div>'
+    + '<div class="cs">期間最高<b>' + yen(hi) + '</b></div>'
+    + '<div class="cs">期間最安<b>' + yen(lo) + '</b></div>'
+    + '<div class="cs">期間変動<b class="' + ccls + '">' + pct(chg) + '</b></div>'
+    + '</div>'
+    + '<div class="chart-container"><canvas id="q1Chart"></canvas></div>';
+
+  const yMin = Math.floor(lo * 0.985 / 250) * 250;
+  const yMax = Math.ceil(hi * 1.015 / 250) * 250;
+
+  chartObj = new Chart(document.getElementById('q1Chart'), {
+    type: 'line',
+    data: {
+      labels: pts.map(p => p.date),
+      datasets: [{
+        data: pts.map(p => p.q1),
+        borderColor: '#e74c3c', borderWidth: 2.4,
+        backgroundColor: 'rgba(231,76,60,0.10)', fill: true,
+        pointRadius: 0, pointHoverRadius: 5, pointHoverBackgroundColor: '#e74c3c',
+        tension: 0.25,
+      }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            title: items => pts[items[0].dataIndex].day,
+            label: ctx => 'BOX1個 単価 ' + yen(ctx.raw),
+          },
+        },
+      },
+      scales: {
+        x: { grid: { display: false },
+             ticks: { font: { size: 10 }, color: '#98a2ae', maxRotation: 0,
+                      autoSkip: true, maxTicksLimit: 6 } },
+        y: { min: yMin, max: yMax,
+             ticks: { font: { size: 10 }, color: '#98a2ae',
+                      callback: v => '¥' + (v / 1000).toFixed(1) + 'k' },
+             grid: { color: 'rgba(0,0,0,0.05)' } },
+      },
+    },
+  });
+}
 </script>
 </body></html>"""
 
