@@ -23,6 +23,12 @@ BASE_DIR = Path(__file__).parent
 BOX_URLS: dict[str, str] = json.loads(
     (BASE_DIR / "box_urls.json").read_text(encoding="utf-8")
 )
+try:
+    BOX_IMAGES: dict[str, str] = json.loads(
+        (BASE_DIR / "box_images.json").read_text(encoding="utf-8")
+    )
+except FileNotFoundError:  # fetch_box_images.py を流せば作られる
+    BOX_IMAGES = {}
 SNAPSHOT_DIR = BASE_DIR / "snapshots"
 SNAPSHOT_CACHE_FILE = BASE_DIR / "snapshots_cache.json"
 
@@ -309,7 +315,10 @@ LOOKUP_HTML = r"""<!DOCTYPE html>
             padding: 10px 14px 8px; box-shadow: 0 2px 10px rgba(0,0,0,.12); }
   .brand { font-size: 15px; font-weight: 700; color: #fff; letter-spacing: .02em;
            margin-bottom: 8px; }
-  .nav { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; }
+  .nav { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none;
+         /* 横スクロールできることが分かるよう右端をフェードさせる */
+         mask-image: linear-gradient(to right, #000 86%, transparent);
+         -webkit-mask-image: linear-gradient(to right, #000 86%, transparent); }
   .nav::-webkit-scrollbar { display: none; }
   .nav a { flex: none; padding: 6px 13px; border-radius: 999px; text-decoration: none;
            font-size: 12.5px; color: #cfd8e3; background: rgba(255,255,255,.09); }
@@ -332,25 +341,49 @@ LOOKUP_HTML = r"""<!DOCTYPE html>
   .btn-go:active { background: #c0392b; }
   .hint { font-size: 11.5px; color: var(--muted); margin-top: 9px; line-height: 1.6; }
 
-  /* ── box list ── */
-  .list-head { display: flex; align-items: center; justify-content: space-between;
-               padding: 12px 14px; cursor: pointer; }
+  /* ── box gallery ── */
+  .list-head { display: flex; align-items: baseline; justify-content: space-between;
+               gap: 8px; padding: 13px 14px 10px; }
   .list-title { font-size: 13px; font-weight: 700; color: var(--sub); }
   .list-title span { color: var(--muted); font-weight: 500; margin-left: 4px; }
-  .chev { font-size: 11px; color: var(--muted); transition: transform .18s; }
-  .chev.open { transform: rotate(180deg); }
-  .list-body { max-height: 200px; overflow-y: auto; padding: 0 14px 14px;
-               border-top: 1px solid var(--line); }
-  .list-body.hidden { display: none; }
-  .list-grid { display: flex; flex-wrap: wrap; gap: 6px; padding-top: 12px; }
-  .chip { background: #f4f6f9; border: 1px solid var(--line); border-radius: 8px;
-          padding: 6px 10px; font-size: 12.5px; cursor: pointer; color: var(--sub); }
-  .chip:active { background: #e9edf2; }
-  .chip.hide { display: none; }
-  .empty-chip { font-size: 12px; color: var(--muted); padding: 12px 0 0; }
+  .list-hint { font-size: 11px; color: var(--muted); }
+  .list-body { padding: 0 12px 14px; border-top: 1px solid var(--line); }
+  .list-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+               gap: 10px 8px; padding-top: 12px; }
+  .tile { display: flex; flex-direction: column; align-items: center; gap: 6px;
+          background: none; border: none; padding: 0; font-family: inherit;
+          cursor: pointer; color: var(--sub); }
+  .tile.hide { display: none; }
+  .thumb { position: relative; width: 100%; aspect-ratio: 1; border-radius: 10px;
+           background: #f4f6f9; border: 1px solid var(--line); overflow: hidden;
+           display: flex; align-items: center; justify-content: center; font-size: 24px; }
+  .thumb img { position: absolute; inset: 0; width: 100%; height: 100%;
+               object-fit: contain; padding: 5px; }
+  .tile:active .thumb { border-color: var(--navy); }
+  .tile.on .thumb { border-color: var(--red); box-shadow: 0 0 0 2px rgba(231,76,60,.22); }
+  .tile-name { font-size: 11px; line-height: 1.35; text-align: center; word-break: break-word; }
+  .tile.on .tile-name { color: var(--red); font-weight: 700; }
+  .tile-meta { font-size: 11.5px; font-weight: 700; color: var(--ink); line-height: 1.3;
+               font-variant-numeric: tabular-nums; }
+  .tile-chg { font-size: 10px; font-weight: 600; margin-left: 3px; }
+  .tile-chg.up { color: var(--green); }
+  .tile-chg.down { color: var(--red); }
+  .tile-chg.flat { color: var(--muted); }
+  .empty-chip { font-size: 12px; color: var(--muted); padding: 14px 2px 0; }
 
   /* ── result header ── */
-  .res-head { padding: 14px 14px 12px; border-bottom: 1px solid var(--line); }
+  .res-head { padding: 14px; border-bottom: 1px solid var(--line); }
+  .res-top { display: flex; gap: 12px; align-items: center; }
+  .res-thumb { position: relative; flex: none; width: 56px; height: 56px; border-radius: 10px;
+               overflow: hidden; background: #f4f6f9; border: 1px solid var(--line);
+               display: flex; align-items: center; justify-content: center; font-size: 22px; }
+  .res-thumb img { position: absolute; inset: 0; width: 100%; height: 100%;
+                   object-fit: contain; padding: 3px; }
+  .res-titles { min-width: 0; }
+  .back-gallery { margin-top: 11px; width: 100%; padding: 9px; border: 1px solid var(--line);
+                  background: #fafbfc; border-radius: 9px; font-size: 12px; font-weight: 700;
+                  color: var(--navy); font-family: inherit; cursor: pointer; }
+  .back-gallery:active { background: #f0f3f7; }
   .res-name { font-size: 17px; font-weight: 700; line-height: 1.35; }
   .res-meta { font-size: 11.5px; color: var(--muted); margin-top: 5px; }
   .res-meta b { color: var(--sub); font-weight: 600; }
@@ -377,13 +410,16 @@ LOOKUP_HTML = r"""<!DOCTYPE html>
                 white-space: nowrap; }
   .seg button.on { background: #fff; color: var(--navy); font-weight: 700;
                    box-shadow: 0 1px 2px rgba(0,0,0,.08); }
-  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
-  th { background: #f7f9fb; color: var(--muted); padding: 8px 14px; text-align: right;
+  .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { background: #f7f9fb; color: var(--muted); padding: 8px 10px; text-align: right;
        font-size: 10.5px; font-weight: 700; letter-spacing: .03em;
        border-bottom: 1px solid var(--line); white-space: nowrap; }
-  th:first-child { text-align: left; }
-  td { padding: 9px 14px; border-bottom: 1px solid #f4f6f9; text-align: right;
+  th:first-child { text-align: left; padding-left: 14px; }
+  th:last-child, td:last-child { padding-right: 14px; }
+  td { padding: 9px 10px; border-bottom: 1px solid #f4f6f9; text-align: right;
        font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td:first-child { padding-left: 14px; }
   td:first-child { text-align: left; color: var(--sub); }
   tr.best td { background: #fff6f4; color: var(--red); font-weight: 700; }
   tr.q1 td:first-child { font-weight: 700; color: var(--navy); }
@@ -422,7 +458,8 @@ LOOKUP_HTML = r"""<!DOCTYPE html>
 
   @media (max-width: 360px) {
     .hero-value { font-size: 19px; }
-    th, td { padding-left: 10px; padding-right: 10px; }
+    table { font-size: 12.5px; }
+    th, td { padding-left: 8px; padding-right: 8px; }
   }
 </style>
 </head>
@@ -447,18 +484,18 @@ LOOKUP_HTML = r"""<!DOCTYPE html>
     <p class="hint">スニダンのリアルタイム価格を取得します（10〜20秒かかります）。単価はすべて送料 ¥990 込み。</p>
   </section>
 
-  <div id="result"></div>
-
-  <section class="card">
-    <div class="list-head" onclick="toggleList()">
-      <div class="list-title">📦 対応BOX一覧<span id="list-count"></span></div>
-      <div class="chev open" id="chev">▼</div>
+  <section class="card" id="gallery">
+    <div class="list-head">
+      <div class="list-title">📦 BOXを選ぶ<span id="list-count"></span></div>
+      <div class="list-hint">価格は前回取得時点の目安</div>
     </div>
-    <div class="list-body" id="list-body">
+    <div class="list-body">
       <div class="list-grid" id="box-list"></div>
       <div class="empty-chip" id="chip-empty" style="display:none">該当するBOXがありません</div>
     </div>
   </section>
+
+  <div id="result"></div>
 </main>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
@@ -482,40 +519,75 @@ let range = 'all';
 function yen(n) { return '¥' + Math.round(n).toLocaleString(); }
 function pct(n) { return (n > 0 ? '+' : '') + n.toFixed(1) + '%'; }
 
-/* ── BOX一覧 ── */
+/* ── BOX一覧（画像＋名前＋直近価格のタイル。全件そのまま並べる） ── */
+const IMG_OF = Object.fromEntries(BOX_LIST.map(b => [b.name, b.img]));
+
 window.addEventListener('DOMContentLoaded', () => {
   const grid = document.getElementById('box-list');
-  BOX_LIST.forEach(name => {
-    const el = document.createElement('div');
-    el.className = 'chip';
-    el.textContent = name;
-    el.dataset.name = name;
-    el.onclick = () => { document.getElementById('q').value = name; search(); };
+  BOX_LIST.forEach(box => {
+    const el = document.createElement('button');
+    el.className = 'tile';
+    el.type = 'button';
+    el.dataset.name = box.name;
+    const img = box.img
+      ? '<img loading="lazy" src="' + box.img + '" alt="" onerror="this.remove()">'
+      : '';
+    el.innerHTML = '<div class="thumb">📦' + img + '</div>'
+                 + '<div class="tile-name">' + box.name + '</div>'
+                 + '<div class="tile-meta"></div>';
+    el.onclick = () => { document.getElementById('q').value = box.name; search(); };
     grid.appendChild(el);
   });
   document.getElementById('list-count').textContent = '（' + BOX_LIST.length + '件）';
-  document.getElementById('q').addEventListener('input', filterChips);
+  document.getElementById('q').addEventListener('input', filterTiles);
   document.getElementById('q').addEventListener('keydown', e => {
     if (e.key === 'Enter') { e.target.blur(); search(); }
   });
+  loadSummary();
 });
 
-function toggleList() {
-  const body = document.getElementById('list-body');
-  body.classList.toggle('hidden');
-  document.getElementById('chev').classList.toggle('open');
+/* タイルに前回スナップショットの最安単価と7日変動を入れる（一覧のまま比べられるように） */
+async function loadSummary() {
+  let items;
+  try {
+    items = (await (await fetch('/api/summary')).json()).items || [];
+  } catch (e) { return; }
+  const by = Object.fromEntries(items.map(i => [i.name, i]));
+  document.querySelectorAll('.tile').forEach(t => {
+    const it = by[t.dataset.name];
+    if (!it) return;
+    const d7 = it.d7;
+    const cls = d7 === null || d7 === undefined ? 'flat' : d7 > 0.05 ? 'up' : d7 < -0.05 ? 'down' : 'flat';
+    const txt = d7 === null || d7 === undefined ? '' : pct(d7);
+    t.querySelector('.tile-meta').innerHTML =
+      yen(it.price) + (txt ? '<span class="tile-chg ' + cls + '">' + txt + '</span>' : '');
+  });
 }
 
-function filterChips() {
+function filterTiles() {
   const q = document.getElementById('q').value.trim();
   let shown = 0;
-  document.querySelectorAll('.chip').forEach(c => {
-    const hit = !q || c.dataset.name.includes(q);
-    c.classList.toggle('hide', !hit);
+  document.querySelectorAll('.tile').forEach(t => {
+    const hit = !q || t.dataset.name.includes(q);
+    t.classList.toggle('hide', !hit);
     if (hit) shown++;
   });
   document.getElementById('chip-empty').style.display = shown ? 'none' : 'block';
 }
+
+function markActive(name) {
+  document.querySelectorAll('.tile').forEach(t => {
+    t.classList.toggle('on', t.dataset.name === name);
+  });
+}
+
+function scrollTo_(el) {
+  const bar = document.querySelector('.topbar');
+  const off = (bar ? bar.offsetHeight : 60) + 10;
+  window.scrollTo(0, Math.max(0, el.offsetTop - off));
+}
+function scrollToResult() { scrollTo_(document.getElementById('result')); }
+function scrollToGallery() { scrollTo_(document.getElementById('gallery')); }
 
 /* ── 検索 ── */
 async function search() {
@@ -523,6 +595,7 @@ async function search() {
   if (!q) return;
   const res = document.getElementById('result');
   res.innerHTML = '<div class="card"><div class="state"><span class="spin"></span>スニダンからデータ取得中…</div></div>';
+  scrollToResult();
   try {
     const resp = await fetch('/api/lookup?name=' + encodeURIComponent(q));
     const data = await resp.json();
@@ -530,6 +603,8 @@ async function search() {
     CURRENT = data;
     expanded = false;
     renderResult();
+    markActive(data.name);
+    scrollToResult();
     loadChart(data.name);
   } catch (e) {
     res.innerHTML = '<div class="error">⚠️ 通信エラーが発生しました</div>';
@@ -545,10 +620,15 @@ function renderResult() {
   const baseUnit = one ? one.unit : best.unit;
   const gap = one ? (best.unit - one.unit) / one.unit * 100 : 0;
 
+  const img = IMG_OF[d.name];
   const head =
     '<div class="res-head">'
-    + '<div class="res-name">' + d.name + '</div>'
-    + '<div class="res-meta">取得 ' + d.fetched_at + '　/　市場総箱数 <b>' + d.total_boxes.toLocaleString() + '箱</b></div>'
+    + '<div class="res-top">'
+    + '<div class="res-thumb">📦' + (img ? '<img src="' + img + '" alt="" onerror="this.remove()">' : '') + '</div>'
+    + '<div class="res-titles"><div class="res-name">' + d.name + '</div>'
+    + '<div class="res-meta">' + d.fetched_at + ' 時点　/　市場 <b>' + d.total_boxes.toLocaleString() + '箱</b></div>'
+    + '</div></div>'
+    + '<button class="back-gallery" onclick="scrollToGallery()">📦 BOX一覧にもどる</button>'
     + '</div>';
 
   const hero =
@@ -569,8 +649,8 @@ function renderResult() {
     + '<button class="' + (sortMode === 'qty' ? 'on' : '') + '" onclick="setSort(\'qty\')">個数順</button>'
     + '<button class="' + (sortMode === 'unit' ? 'on' : '') + '" onclick="setSort(\'unit\')">安い順</button>'
     + '</div></div>'
-    + '<table><thead><tr><th>個数</th><th>出品最安値</th><th>送料込単価</th><th>1個比</th></tr></thead>'
-    + '<tbody>' + rows.html + '</tbody></table>'
+    + '<div class="table-wrap"><table><thead><tr><th>個数</th><th>出品最安値</th><th>送料込単価</th><th>1個比</th></tr></thead>'
+    + '<tbody>' + rows.html + '</tbody></table></div>'
     + (rows.hidden > 0
         ? '<button class="more" onclick="toggleMore()">' + (expanded ? '折りたたむ' : 'すべて表示（あと' + rows.hidden + '件）') + '</button>'
         : '')
@@ -1422,7 +1502,8 @@ def fetch_total_boxes(url: str) -> int:
 
 @app.route("/")
 def index():
-    box_list = [k for k in WATCHLIST_ORDER if k in BOX_URLS]
+    box_list = [{"name": k, "img": BOX_IMAGES.get(k, "")}
+                for k in WATCHLIST_ORDER if k in BOX_URLS]
     return render_template_string(LOOKUP_HTML, box_list=json.dumps(box_list, ensure_ascii=False))
 
 
