@@ -1,6 +1,7 @@
 import json
 import re
-from datetime import datetime
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
@@ -201,6 +202,81 @@ def _build_chart_data(name: str) -> list[dict]:
     return result
 
 
+SNKRDUNK = "https://snkrdunk.com"
+JST = timezone(timedelta(hours=9))
+HISTORY_TTL = 1800  # 相場履歴のメモリキャッシュ 30分
+
+_history_cache: dict[str, tuple[float, dict]] = {}
+_product_cache: dict[str, tuple[int, int | None]] = {}
+
+
+def _sd_json(path: str, params: dict | None = None):
+    r = requests.get(SNKRDUNK + path, params=params, timeout=15,
+                     headers={**HEADERS, "Accept": "application/json"})
+    r.raise_for_status()
+    return r.json()
+
+
+def _resolve_product(name: str) -> tuple[int, int | None]:
+    """BOX名 → (productCatalogId, 「1個」variant_id)。どちらも変わらないので永続キャッシュ。"""
+    if name in _product_cache:
+        return _product_cache[name]
+    m = re.search(r"/apparels/(\d+)", BOX_URLS[name])
+    if not m:
+        raise ValueError(f"apparel id が取れません: {name}")
+    pcid = _sd_json(f"/v1/apparels/{m.group(1)}").get("productCatalogId")
+    if not pcid:
+        raise ValueError(f"productCatalogId がありません: {name}")
+    hist = _sd_json(f"/v3/products/{pcid}/trading-history", {"range": "all"})
+    opts = ((hist.get("filters") or {}).get("variants") or {}).get("options") or []
+    vid = next((o["id"] for o in opts if o.get("name") == "1個"), None)
+    _product_cache[name] = (pcid, vid)
+    return pcid, vid
+
+
+def _box_history(name: str) -> dict:
+    """BOX1個の相場推移（スニダン取引価格・最大3年）。
+    取得できなければ手元スナップショットの出品最安単価にフォールバックする。"""
+    now = time.time()
+    hit = _history_cache.get(name)
+    if hit and now - hit[0] < HISTORY_TTL:
+        return hit[1]
+
+    out = None
+    try:
+        pcid, vid = _resolve_product(name)
+        params = {"range": "all"}
+        if vid:
+            params["variant_id"] = vid
+        hist = _sd_json(f"/v3/products/{pcid}/trading-history", params)
+        lines = (hist.get("chart") or {}).get("lines") or []
+        raw = (lines[0].get("points") if lines else []) or []
+        points = [
+            {"d": datetime.fromtimestamp(pt["timestamp"] / 1000, JST).strftime("%Y-%m-%d"),
+             "p": pt["price"]}
+            for pt in raw if pt.get("price")
+        ]
+        if points:
+            trades = [t for t in hist.get("trades") or [] if t.get("title") == "1個"]
+            out = {
+                "name": name,
+                "source": "snkrdunk",
+                "points": points,
+                "last_trade": trades[0]["price"] if trades else None,
+                "last_trade_at": trades[0]["soldAt"][:10] if trades else None,
+            }
+    except Exception:
+        out = None
+
+    if out is None:
+        points = [{"d": p["day"], "p": p["q1"]} for p in _build_chart_data(name) if p.get("q1")]
+        out = {"name": name, "source": "snapshot", "points": points,
+               "last_trade": None, "last_trade_at": None}
+
+    _history_cache[name] = (now, out)
+    return out
+
+
 # ─── Lookup page (existing) ───
 
 LOOKUP_HTML = r"""<!DOCTYPE html>
@@ -389,18 +465,19 @@ LOOKUP_HTML = r"""<!DOCTYPE html>
 <script>
 const BOX_LIST = {{ box_list | safe }};
 const RANGES = [
-  { key: '1w', label: '1週間', days: 7 },
   { key: '1m', label: '1ヶ月', days: 30 },
   { key: '3m', label: '3ヶ月', days: 90 },
+  { key: '1y', label: '1年', days: 365 },
   { key: 'all', label: 'すべて', days: null },
 ];
 
 let CURRENT = null;      // 直近の検索結果
-let CHART_PTS = [];      // BOX1個単価の履歴
+let CHART_PTS = [];      // BOX1個の相場履歴 [{d, p}]
+let CHART_SRC = '';      // snkrdunk（取引相場）か snapshot（出品最安単価）か
 let chartObj = null;
 let sortMode = 'qty';
 let expanded = false;
-let range = '1m';
+let range = 'all';
 
 function yen(n) { return '¥' + Math.round(n).toLocaleString(); }
 function pct(n) { return (n > 0 ? '+' : '') + n.toFixed(1) + '%'; }
@@ -502,7 +579,7 @@ function renderResult() {
   document.getElementById('result').innerHTML =
     '<section class="card">' + head + hero + table + '</section>'
     + '<section class="card chart-card" id="chart-card">'
-    + '<div class="sec-head stack"><div class="sec-title">📈 BOX1個の単価推移（送料込）</div>'
+    + '<div class="sec-head stack"><div class="sec-title" id="chart-title">📈 BOX1個の相場推移</div>'
     + '<div class="seg" id="range-seg">'
     + RANGES.map(r => '<button class="' + (range === r.key ? 'on' : '') + '" onclick="setRange(\'' + r.key + '\')">' + r.label + '</button>').join('')
     + '</div></div>'
@@ -540,11 +617,12 @@ function setRange(key) { range = key; renderResult(); drawChart(); }
 
 /* ── BOX1個の単価チャート ── */
 async function loadChart(name) {
-  CHART_PTS = [];
+  CHART_PTS = []; CHART_SRC = '';
   try {
-    const resp = await fetch('/api/chart?name=' + encodeURIComponent(name));
+    const resp = await fetch('/api/box_history?name=' + encodeURIComponent(name));
     const data = await resp.json();
-    CHART_PTS = (data.points || []).filter(p => p.q1);
+    CHART_PTS = data.points || [];
+    CHART_SRC = data.source || '';
   } catch (e) { CHART_PTS = []; }
   drawChart();
 }
@@ -552,9 +630,9 @@ async function loadChart(name) {
 function slicePoints() {
   const days = (RANGES.find(r => r.key === range) || {}).days;
   if (!days || !CHART_PTS.length) return CHART_PTS;
-  const last = new Date(CHART_PTS[CHART_PTS.length - 1].day + 'T00:00:00');
+  const last = new Date(CHART_PTS[CHART_PTS.length - 1].d + 'T00:00:00');
   const from = new Date(last.getTime() - days * 86400000);
-  const pts = CHART_PTS.filter(p => new Date(p.day + 'T00:00:00') >= from);
+  const pts = CHART_PTS.filter(p => new Date(p.d + 'T00:00:00') >= from);
   return pts.length >= 2 ? pts : CHART_PTS.slice(-2);
 }
 
@@ -562,36 +640,46 @@ function drawChart() {
   const body = document.getElementById('chart-body');
   if (!body) return;
   if (chartObj) { chartObj.destroy(); chartObj = null; }
+  const isSnkr = CHART_SRC === 'snkrdunk';
+  const title = document.getElementById('chart-title');
+  if (title) title.textContent = isSnkr ? '📈 BOX1個の相場推移（取引価格）'
+                                        : '📈 BOX1個の単価推移（出品最安・送料込）';
   if (!CHART_PTS.length) {
     body.innerHTML = '<div class="chart-empty">このBOXの履歴データがまだありません</div>';
     return;
   }
   const pts = slicePoints();
-  const cur = pts[pts.length - 1].q1;
-  const first = pts[0].q1;
-  const hi = Math.max.apply(null, pts.map(p => p.q1));
-  const lo = Math.min.apply(null, pts.map(p => p.q1));
+  const cur = pts[pts.length - 1].p;
+  const first = pts[0].p;
+  const hi = Math.max.apply(null, pts.map(p => p.p));
+  const lo = Math.min.apply(null, pts.map(p => p.p));
   const chg = first ? (cur - first) / first * 100 : 0;
   const ccls = chg > 0.05 ? 'up' : chg < -0.05 ? 'down' : '';
+  const span = CHART_PTS[0].d + ' 〜 ' + CHART_PTS[CHART_PTS.length - 1].d;
 
   body.innerHTML =
     '<div class="chart-stats">'
-    + '<div class="cs">現在<b>' + yen(cur) + '</b></div>'
+    + '<div class="cs">' + (isSnkr ? '直近相場' : '現在') + '<b>' + yen(cur) + '</b></div>'
     + '<div class="cs">期間最高<b>' + yen(hi) + '</b></div>'
     + '<div class="cs">期間最安<b>' + yen(lo) + '</b></div>'
     + '<div class="cs">期間変動<b class="' + ccls + '">' + pct(chg) + '</b></div>'
     + '</div>'
-    + '<div class="chart-container"><canvas id="q1Chart"></canvas></div>';
+    + '<div class="chart-container"><canvas id="q1Chart"></canvas></div>'
+    + '<div class="note">' + (isSnkr
+        ? 'スニダンの「1個」取引価格（送料別）。上の表は販売中の出品最安値（送料込）なので水準は一致しません。'
+        : 'スニダンの相場を取得できなかったため、手元スナップショットの出品最安単価（送料込）を表示しています。')
+      + '<br>データ期間: ' + span + '（' + CHART_PTS.length + '日分）</div>';
 
-  const yMin = Math.floor(lo * 0.985 / 250) * 250;
-  const yMax = Math.ceil(hi * 1.015 / 250) * 250;
+  // ラベル書式は実際に表示される期間の長さで決める（「すべて」でも履歴が短いBOXがあるため）
+  const spanDays = (new Date(pts[pts.length - 1].d) - new Date(pts[0].d)) / 86400000;
+  const fmtLabel = d => spanDays > 300 ? d.slice(2, 7).replace('-', '/') : d.slice(5).replace('-', '/');
 
   chartObj = new Chart(document.getElementById('q1Chart'), {
     type: 'line',
     data: {
-      labels: pts.map(p => p.date),
+      labels: pts.map(p => fmtLabel(p.d)),
       datasets: [{
-        data: pts.map(p => p.q1),
+        data: pts.map(p => p.p),
         borderColor: '#e74c3c', borderWidth: 2.4,
         backgroundColor: 'rgba(231,76,60,0.10)', fill: true,
         pointRadius: 0, pointHoverRadius: 5, pointHoverBackgroundColor: '#e74c3c',
@@ -605,8 +693,8 @@ function drawChart() {
         legend: { display: false },
         tooltip: {
           callbacks: {
-            title: items => pts[items[0].dataIndex].day,
-            label: ctx => 'BOX1個 単価 ' + yen(ctx.raw),
+            title: items => pts[items[0].dataIndex].d,
+            label: ctx => 'BOX1個 ' + yen(ctx.raw),
           },
         },
       },
@@ -614,9 +702,9 @@ function drawChart() {
         x: { grid: { display: false },
              ticks: { font: { size: 10 }, color: '#98a2ae', maxRotation: 0,
                       autoSkip: true, maxTicksLimit: 6 } },
-        y: { min: yMin, max: yMax,
-             ticks: { font: { size: 10 }, color: '#98a2ae',
-                      callback: v => '¥' + (v / 1000).toFixed(1) + 'k' },
+        y: { grace: '6%',
+             ticks: { font: { size: 10 }, color: '#98a2ae', maxTicksLimit: 6,
+                      callback: v => '¥' + (v / 1000).toFixed(v % 1000 === 0 ? 0 : 1) + 'k' },
              grid: { color: 'rgba(0,0,0,0.05)' } },
       },
     },
@@ -1407,6 +1495,14 @@ def portfolio():
     box_list = [k for k in WATCHLIST_ORDER if k in BOX_URLS]
     return render_template_string(PORTFOLIO_HTML,
                                   box_list=json.dumps(box_list, ensure_ascii=False))
+
+
+@app.route("/api/box_history")
+def api_box_history():
+    name = request.args.get("name", "").strip()
+    if name not in BOX_URLS:
+        return jsonify({"error": f"「{name}」は対応BOX一覧にありません"}), 404
+    return jsonify(_box_history(name))
 
 
 @app.route("/psa")
