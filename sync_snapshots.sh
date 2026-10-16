@@ -33,3 +33,21 @@ else
     git push origin main
     echo "Pushed to GitHub → Render will auto-deploy"
 fi
+
+# 4. kkonly（統合ダッシュボード）を更新してデプロイ。
+#    ここで失敗しても上のRender更新は済んでいるので、ログに出すだけで終了コードは汚さない。
+if ! ~/pokemon_monitors/kkonly/sync_and_deploy.sh; then
+    echo "[warn] kkonly のデプロイに失敗しました（Renderの更新は完了しています）" >&2
+fi
+
+# 5. Cloudflare 版 BOX検索（https://box.kk1117.workers.dev）にも同じキャッシュを載せてデプロイ。
+#    ここを通さないと CF 版のスナップショットが更新されず、タイルの価格が古いまま残る。
+#    node は nvm 配下で launchd の PATH に無いので、kkonly と同じ手順で通す。
+CF_DIR=~/pokemon_monitors/pokemon_lookup-cf
+NODE_BIN=$(dirname "$(ls -1d "$HOME"/.nvm/versions/node/*/bin/npx 2>/dev/null | sort -V | tail -1)")
+if cp snapshots_cache.json "$CF_DIR/data/snapshots_cache.json" \
+   && (cd "$CF_DIR" && PATH="$NODE_BIN:$PATH" npx wrangler deploy); then
+    echo "Deployed → https://box.kk1117.workers.dev"
+else
+    echo "[warn] box (Cloudflare) のデプロイに失敗しました" >&2
+fi

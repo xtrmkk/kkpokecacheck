@@ -33,6 +33,8 @@ SNAPSHOT_DIR = BASE_DIR / "snapshots"
 SNAPSHOT_CACHE_FILE = BASE_DIR / "snapshots_cache.json"
 
 WATCHLIST_ORDER = [
+    "30th 9種セット",
+    "30th CELEBRATION",
     "ストームエメラルダ",
     "アビスアイ", "ニンジャスピナー", "ムニキスゼロ", "メガドリーム", "インフェルノX",
     "メガブレイブ", "メガシンフォニア", "ブラックボルト", "ホワイトフレア", "ブラックボルトDX", "ホワイトフレアDX",
